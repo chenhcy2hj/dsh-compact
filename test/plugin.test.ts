@@ -37,22 +37,35 @@ class FakeSession implements SessionLike {
 }
 
 class FakeContext {
-  private listeners = new Map<string, Array<(session: SessionLike, event: SessionEvent) => unknown>>()
+  private listeners = new Map<string, Array<(...args: unknown[]) => unknown>>()
   readonly logger = {
     info: () => {},
     warn: () => {},
   }
 
-  on(event: string, listener: (session: SessionLike, event: SessionEvent) => unknown) {
+  on(event: string, listener: (...args: unknown[]) => unknown) {
     const list = this.listeners.get(event) ?? []
     list.push(listener)
     this.listeners.set(event, list)
   }
 
-  async emit(event: string, session: SessionLike, sessionEvent: SessionEvent) {
-    for (const listener of this.listeners.get(event) ?? []) {
-      await listener(session, sessionEvent)
+  emitSessionEvent(session: SessionLike, sessionEvent: SessionEvent) {
+    for (const listener of this.listeners.get('session/event') ?? []) {
+      listener(session, sessionEvent)
     }
+  }
+
+  async runPreStep(session: SessionLike, turn?: number) {
+    const handlers = this.listeners.get('agent/pre-step') ?? []
+    let idx = 0
+    const next = async (): Promise<unknown> => {
+      if (idx >= handlers.length) {
+        return { kind: 'enter' }
+      }
+      const fn = handlers[idx++]!
+      return fn({ agent: { session }, ...(turn !== undefined ? { turn } : {}) }, next)
+    }
+    return next()
   }
 }
 
@@ -65,18 +78,20 @@ const baseConfig: CompactConfig = {
 }
 
 describe('Seam 1: apply(ctx, config)', () => {
-  it('compacts completed turn tool results when turn/end is emitted and ignores turn/start', async () => {
+  it('compacts prior turn tool results on agent/pre-step inside an open turn while keeping current turn intact', async () => {
     const ctx = new FakeContext()
     apply(ctx as never, baseConfig)
 
     const session = new FakeSession()
+    // Turn 1: open turn, tool result, close turn (no replacement outside open turn)
+    ctx.emitSessionEvent(session, { type: 'turn/start', data: { turn: 1 } })
     session.append(
       'tool/result',
       {
         turn: 1,
         step: 1,
         message: {
-          role: 'toolResult',
+          role: 'tool',
           toolCallId: 'call_1',
           toolName: 'read_file',
           content: [{ type: 'text', text: 'x'.repeat(500) }],
@@ -84,16 +99,16 @@ describe('Seam 1: apply(ctx, config)', () => {
       },
       { surfaceOp: 'append' },
     )
-
-    // Non-turn/end event must not compact
-    await ctx.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
+    await ctx.runPreStep(session)
     assert.equal(
       (session.getSurfaceEvents()[0]!.data as { message: { content: Array<{ text: string }> } }).message.content[0]!.text,
       'x'.repeat(500),
     )
+    ctx.emitSessionEvent(session, { type: 'turn/end', data: { turn: 1 } })
 
-    // turn/end must trigger compaction
-    await ctx.emit('session/event', session, { type: 'turn/end', data: { turn: 1 } })
+    // Turn 2 opens -> pre-step compacts Turn 1's tool result inside Turn 2
+    ctx.emitSessionEvent(session, { type: 'turn/start', data: { turn: 2 } })
+    await ctx.runPreStep(session)
     assert.ok(
       (session.getSurfaceEvents()[0]!.data as { message: { content: Array<{ text: string }> } }).message.content[0]!.text.startsWith(COMPACTED_PREFIX),
     )
@@ -110,7 +125,7 @@ describe('Seam 1: apply(ctx, config)', () => {
         turn: 1,
         step: 1,
         message: {
-          role: 'toolResult',
+          role: 'tool',
           toolCallId: 'call_disabled',
           toolName: 'bash',
           content: [{ type: 'text', text: 'y'.repeat(500) }],
@@ -119,7 +134,8 @@ describe('Seam 1: apply(ctx, config)', () => {
       { surfaceOp: 'append' },
     )
 
-    await ctx.emit('session/event', session, { type: 'turn/end', data: { turn: 1 } })
+    ctx.emitSessionEvent(session, { type: 'turn/start', data: { turn: 2 } })
+    await ctx.runPreStep(session)
     assert.equal(
       (session.getSurfaceEvents()[0]!.data as { message: { content: Array<{ text: string }> } }).message.content[0]!.text,
       'y'.repeat(500),
@@ -137,7 +153,7 @@ describe('Seam 1: apply(ctx, config)', () => {
         turn: 1,
         step: 1,
         message: {
-          role: 'toolResult',
+          role: 'tool',
           toolCallId: 'call_t1',
           toolName: 'read_file',
           content: [{ type: 'text', text: 'a'.repeat(500) }],
@@ -146,21 +162,22 @@ describe('Seam 1: apply(ctx, config)', () => {
       { surfaceOp: 'append' },
     )
 
-    // Turn 1 ends -> keepRecentTurns=1 keeps turn 1 intact
-    await ctx.emit('session/event', session, { type: 'turn/end', data: { turn: 1 } })
+    // Turn 2 opens -> keepRecentTurns=1 keeps Turn 1 intact
+    ctx.emitSessionEvent(session, { type: 'turn/start', data: { turn: 2 } })
+    await ctx.runPreStep(session)
     assert.equal(
       (session.getSurfaceEvents()[0]!.data as { message: { content: Array<{ text: string }> } }).message.content[0]!.text,
       'a'.repeat(500),
     )
 
-    // Turn 2 ends -> turn 1 is now compacted, turn 2 stays intact
+    // Turn 3 opens -> Turn 1 is now compacted, Turn 2 stays intact
     session.append(
       'tool/result',
       {
         turn: 2,
         step: 1,
         message: {
-          role: 'toolResult',
+          role: 'tool',
           toolCallId: 'call_t2',
           toolName: 'read_file',
           content: [{ type: 'text', text: 'b'.repeat(500) }],
@@ -168,7 +185,8 @@ describe('Seam 1: apply(ctx, config)', () => {
       },
       { surfaceOp: 'append' },
     )
-    await ctx.emit('session/event', session, { type: 'turn/end', data: { turn: 2 } })
+    ctx.emitSessionEvent(session, { type: 'turn/start', data: { turn: 3 } })
+    await ctx.runPreStep(session)
 
     const [t1, t2] = session.getSurfaceEvents()
     assert.ok(
@@ -194,9 +212,8 @@ describe('Seam 1: apply(ctx, config)', () => {
       append: () => 1,
     }
 
-    await assert.doesNotReject(() =>
-      ctx.emit('session/event', failingSession, { type: 'turn/end', data: { turn: 1 } }),
-    )
+    ctx.emitSessionEvent(failingSession, { type: 'turn/start', data: { turn: 2 } })
+    await assert.doesNotReject(() => ctx.runPreStep(failingSession))
     assert.equal(warnings.length, 1)
   })
 })
