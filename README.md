@@ -16,37 +16,34 @@
 ### 1. CLI / Web 版 DSH
 
 ```bash
-git clone https://github.com/<your-username>/dsh-compact.git
-dsh plugin --profile web add link:/path/to/dsh-compact
+dsh plugin --profile web add @liuliy2hj/dsh-compact
 ```
 
 ### 2. 桌面版 DSH（`desktop` profile）
 
-1. 克隆仓库到本地目录：
+1. 在 `~/.dsh/profiles/desktop/` 安装（或本地克隆后软链）：
    ```bash
-   git clone https://github.com/<your-username>/dsh-compact.git
+   cd ~/.dsh/profiles/desktop
+   pnpm add @liuliy2hj/dsh-compact
    ```
-2. 创建软链接到桌面版 `node_modules`：
-   ```bash
-   ln -s /path/to/dsh-compact ~/.dsh/profiles/desktop/node_modules/dsh-compact
-   ```
-3. 编辑 `~/.dsh/profiles/desktop/package.json`，将 `dsh-compact` 加入 `dsh.profile.bundles` 与 `dependencies`：
+   *(若本地克隆源码测试，可使用软链 `ln -s /path/to/dsh-compact ~/.dsh/profiles/desktop/node_modules/@liuliy2hj/dsh-compact`)*
+2. 编辑 `~/.dsh/profiles/desktop/package.json`，将 `@liuliy2hj/dsh-compact` 加入 `dsh.profile.bundles` 与 `dependencies`：
    ```json
    {
      "dsh": {
        "profile": {
-         "bundles": ["...", "dsh-compact"]
+         "bundles": ["...", "@liuliy2hj/dsh-compact"]
        }
      },
      "dependencies": {
-       "dsh-compact": "link:/path/to/dsh-compact"
+       "@liuliy2hj/dsh-compact": "^0.1.0"
      }
    }
    ```
-4. （可选）如需自定义参数，在 `~/.dsh/profiles/desktop/cordis.patch.yml` 中追加配置：
+3. （可选）如需自定义参数，在 `~/.dsh/profiles/desktop/cordis.patch.yml` 中追加配置：
    ```yaml
    - id: dsh-compact
-     name: dsh-compact
+     name: "@liuliy2hj/dsh-compact"
      config:
        enabled: true
        keepRecentTurns: 0
@@ -54,4 +51,4 @@ dsh plugin --profile web add link:/path/to/dsh-compact
        preserveErrors: true
        excludedTools: []
    ```
-5. 完全退出并重启桌面版 DSH 即可生效。
+4. 完全退出并重启桌面版 DSH 即可生效。
